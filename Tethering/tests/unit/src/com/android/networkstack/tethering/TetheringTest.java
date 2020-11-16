@@ -52,6 +52,7 @@ import static android.net.wifi.WifiManager.WIFI_AP_STATE_ENABLED;
 import static android.telephony.SubscriptionManager.INVALID_SUBSCRIPTION_ID;
 
 import static com.android.net.module.util.Inet4AddressUtils.intToInet4AddressHTH;
+import static com.android.networkstack.tethering.Tethering.UserRestrictionActionListener;
 import static com.android.networkstack.tethering.TetheringNotificationUpdater.DOWNSTREAM_NONE;
 import static com.android.networkstack.tethering.UpstreamNetworkMonitor.EVENT_ON_CAPABILITIES;
 
@@ -125,6 +126,7 @@ import android.net.wifi.WifiManager;
 import android.net.wifi.p2p.WifiP2pGroup;
 import android.net.wifi.p2p.WifiP2pInfo;
 import android.net.wifi.p2p.WifiP2pManager;
+import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
@@ -734,9 +736,12 @@ public class TetheringTest {
         initTetheringUpstream(upstreamState);
 
         // Emulate pressing the USB tethering button in Settings UI.
-        mTethering.startTethering(createTetheringRequestParcel(TETHERING_USB), null);
+        final TetheringRequestParcel request = createTetheringRequestParcel(TETHERING_USB);
+        mTethering.startTethering(request, null);
         mLooper.dispatchAll();
         verify(mUsbManager, times(1)).setCurrentFunctions(UsbManager.FUNCTION_RNDIS);
+        assertEquals(1, mTethering.getActiveTetheringRequests().size());
+        assertEquals(request, mTethering.getActiveTetheringRequests().get(TETHERING_USB));
 
         mTethering.interfaceStatusChanged(TEST_USB_IFNAME, true);
     }
@@ -844,6 +849,14 @@ public class TetheringTest {
         mLooper.dispatchAll();
     }
 
+    private void assertSetIfaceToDadProxy(final int numOfCalls, final String ifaceName) {
+        if (Build.VERSION.SDK_INT > Build.VERSION_CODES.R || "S".equals(Build.VERSION.CODENAME)
+                    || "T".equals(Build.VERSION.CODENAME)) {
+            verify(mDadProxy, times(numOfCalls)).setUpstreamIface(
+                     argThat(ifaceParams  -> ifaceName.equals(ifaceParams.name)));
+        }
+    }
+
     @Test
     public void workingMobileUsbTethering_IPv4() throws Exception {
         UpstreamNetworkState upstreamState = buildMobileIPv4UpstreamState();
@@ -853,7 +866,7 @@ public class TetheringTest {
         verify(mNetd, times(1)).ipfwdAddInterfaceForward(TEST_USB_IFNAME, TEST_MOBILE_IFNAME);
 
         sendIPv6TetherUpdates(upstreamState);
-        verify(mDadProxy, never()).setUpstreamIface(notNull());
+        assertSetIfaceToDadProxy(0 /* numOfCalls */, "" /* ifaceName */);
         verify(mRouterAdvertisementDaemon, never()).buildNewRa(any(), notNull());
         verify(mDhcpServer, timeout(DHCPSERVER_START_TIMEOUT_MS).times(1)).startWithCallbacks(
                 any(), any());
@@ -881,7 +894,7 @@ public class TetheringTest {
 
         sendIPv6TetherUpdates(upstreamState);
         // TODO: add interfaceParams to compare in verify.
-        verify(mDadProxy, times(1)).setUpstreamIface(notNull());
+        assertSetIfaceToDadProxy(1 /* numOfCalls */, TEST_MOBILE_IFNAME /* ifaceName */);
         verify(mRouterAdvertisementDaemon, times(1)).buildNewRa(any(), notNull());
         verify(mNetd, times(1)).tetherApplyDnsInterfaces();
     }
@@ -898,7 +911,7 @@ public class TetheringTest {
                 any(), any());
 
         sendIPv6TetherUpdates(upstreamState);
-        verify(mDadProxy, times(1)).setUpstreamIface(notNull());
+        assertSetIfaceToDadProxy(1 /* numOfCalls */, TEST_MOBILE_IFNAME /* ifaceName */);
         verify(mRouterAdvertisementDaemon, times(1)).buildNewRa(any(), notNull());
         verify(mNetd, times(1)).tetherApplyDnsInterfaces();
     }
@@ -916,7 +929,7 @@ public class TetheringTest {
         verify(mNetd, times(1)).ipfwdAddInterfaceForward(TEST_USB_IFNAME, TEST_MOBILE_IFNAME);
 
         sendIPv6TetherUpdates(upstreamState);
-        verify(mDadProxy, times(1)).setUpstreamIface(notNull());
+        assertSetIfaceToDadProxy(1 /* numOfCalls */, TEST_MOBILE_IFNAME /* ifaceName */);
         verify(mRouterAdvertisementDaemon, times(1)).buildNewRa(any(), notNull());
         verify(mNetd, times(1)).tetherApplyDnsInterfaces();
     }
@@ -1165,20 +1178,26 @@ public class TetheringTest {
         verifyNoMoreInteractions(mNetd);
     }
 
+    private UserRestrictionActionListener makeUserRestrictionActionListener(
+            final Tethering tethering, final boolean currentDisallow, final boolean nextDisallow) {
+        final Bundle newRestrictions = new Bundle();
+        newRestrictions.putBoolean(UserManager.DISALLOW_CONFIG_TETHERING, nextDisallow);
+        when(mUserManager.getUserRestrictions()).thenReturn(newRestrictions);
+
+        final UserRestrictionActionListener ural =
+                new UserRestrictionActionListener(mUserManager, tethering, mNotificationUpdater);
+        ural.mDisallowTethering = currentDisallow;
+        return ural;
+    }
+
     private void runUserRestrictionsChange(
             boolean currentDisallow, boolean nextDisallow, boolean isTetheringActive,
             int expectedInteractionsWithShowNotification) throws  Exception {
-        final Bundle newRestrictions = new Bundle();
-        newRestrictions.putBoolean(UserManager.DISALLOW_CONFIG_TETHERING, nextDisallow);
         final Tethering mockTethering = mock(Tethering.class);
         when(mockTethering.isTetheringActive()).thenReturn(isTetheringActive);
-        when(mUserManager.getUserRestrictions()).thenReturn(newRestrictions);
 
-        final Tethering.UserRestrictionActionListener ural =
-                new Tethering.UserRestrictionActionListener(
-                        mUserManager, mockTethering, mNotificationUpdater);
-        ural.mDisallowTethering = currentDisallow;
-
+        final UserRestrictionActionListener ural =
+                makeUserRestrictionActionListener(mockTethering, currentDisallow, nextDisallow);
         ural.onUserRestrictionsChanged();
 
         verify(mNotificationUpdater, times(expectedInteractionsWithShowNotification))
@@ -1245,6 +1264,27 @@ public class TetheringTest {
 
         runUserRestrictionsChange(currDisallow, nextDisallow, isTetheringActive,
                 expectedInteractionsWithShowNotification);
+    }
+
+    @Test
+    public void testUntetherUsbWhenRestrictionIsOn() {
+        // Start usb tethering and check that usb interface is tethered.
+        final UpstreamNetworkState upstreamState = buildMobileIPv4UpstreamState();
+        runUsbTethering(upstreamState);
+        assertContains(Arrays.asList(mTethering.getTetheredIfaces()), TEST_USB_IFNAME);
+        assertTrue(mTethering.isTetheringActive());
+        assertEquals(0, mTethering.getActiveTetheringRequests().size());
+
+        final Tethering.UserRestrictionActionListener ural = makeUserRestrictionActionListener(
+                mTethering, false /* currentDisallow */, true /* nextDisallow */);
+
+        ural.onUserRestrictionsChanged();
+        mLooper.dispatchAll();
+
+        // Verify that restriction notification has showed to user.
+        verify(mNotificationUpdater, times(1)).notifyTetheringDisabledByRestriction();
+        // Verify that usb tethering has been disabled.
+        verify(mUsbManager, times(1)).setCurrentFunctions(UsbManager.FUNCTION_NONE);
     }
 
     private class TestTetheringEventCallback extends ITetheringEventCallback.Stub {
