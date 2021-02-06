@@ -41,9 +41,12 @@ import android.net.Network;
 import android.net.NetworkCapabilities;
 import android.net.wifi.WifiManager;
 import android.os.Process;
+import android.os.UserHandle;
 import android.text.TextUtils;
 import android.util.Log;
 import android.util.Pair;
+
+import androidx.test.platform.app.InstrumentationRegistry;
 
 import com.android.compatibility.common.util.AppStandbyUtils;
 import com.android.compatibility.common.util.BatteryUtils;
@@ -51,11 +54,9 @@ import com.android.compatibility.common.util.BatteryUtils;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 
-import androidx.test.platform.app.InstrumentationRegistry;
-
 public class NetworkPolicyTestUtils {
 
-    private static final int TIMEOUT_CHANGE_METEREDNESS_MS = 5000;
+    private static final int TIMEOUT_CHANGE_METEREDNESS_MS = 10_000;
 
     private static ConnectivityManager mCm;
     private static WifiManager mWm;
@@ -114,6 +115,12 @@ public class NetworkPolicyTestUtils {
         final ActivityManager am = (ActivityManager) getContext().getSystemService(
                 Context.ACTIVITY_SERVICE);
         return am.isLowRamDevice();
+    }
+
+    /** Asks (not forces) JobScheduler to run the job if constraints are met. */
+    public static void runSatisfiedJob(String pkg, int jobId) {
+        executeShellCommand("cmd jobscheduler run -s -u " + UserHandle.myUserId()
+                + " " + pkg + " " + jobId);
     }
 
     public static boolean isLocationEnabled() {
