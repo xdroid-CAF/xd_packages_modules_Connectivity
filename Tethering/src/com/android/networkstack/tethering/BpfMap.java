@@ -41,6 +41,10 @@ import java.util.function.BiConsumer;
  * @param <V> the value of the map.
  */
 public class BpfMap<K extends Struct, V extends Struct> implements AutoCloseable {
+    static {
+        System.loadLibrary("tetherutilsjni");
+    }
+
     // Following definitions from kernel include/uapi/linux/bpf.h
     public static final int BPF_F_RDWR = 0;
     public static final int BPF_F_RDONLY = 1 << 3;
@@ -218,7 +222,7 @@ public class BpfMap<K extends Struct, V extends Struct> implements AutoCloseable
     }
 
     @Override
-    public void close() throws Exception {
+    public void close() throws ErrnoException {
         closeMap(mMapFd);
     }
 
