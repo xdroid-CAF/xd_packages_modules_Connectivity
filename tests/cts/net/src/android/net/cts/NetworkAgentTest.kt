@@ -35,6 +35,7 @@ import android.net.NetworkCapabilities.NET_CAPABILITY_NOT_CONGESTED
 import android.net.NetworkCapabilities.NET_CAPABILITY_NOT_METERED
 import android.net.NetworkCapabilities.NET_CAPABILITY_NOT_ROAMING
 import android.net.NetworkCapabilities.NET_CAPABILITY_NOT_SUSPENDED
+import android.net.NetworkCapabilities.NET_CAPABILITY_NOT_VCN_MANAGED
 import android.net.NetworkCapabilities.NET_CAPABILITY_NOT_VPN
 import android.net.NetworkCapabilities.NET_CAPABILITY_TEMPORARILY_NOT_METERED
 import android.net.NetworkCapabilities.NET_CAPABILITY_TRUSTED
@@ -45,7 +46,6 @@ import android.net.NetworkProvider
 import android.net.NetworkRequest
 import android.net.RouteInfo
 import android.net.SocketKeepalive
-import android.net.StringNetworkSpecifier
 import android.net.Uri
 import android.net.VpnManager
 import android.net.VpnTransportInfo
@@ -67,7 +67,9 @@ import android.util.DebugUtils.valueToString
 import androidx.test.InstrumentationRegistry
 import com.android.connectivity.aidl.INetworkAgent
 import com.android.connectivity.aidl.INetworkAgentRegistry
+import com.android.modules.utils.build.SdkLevel
 import com.android.net.module.util.ArrayTrackRecord
+import com.android.testutils.CompatUtil
 import com.android.testutils.DevSdkIgnoreRule.IgnoreUpTo
 import com.android.testutils.DevSdkIgnoreRunner
 import com.android.testutils.RecorderCallback.CallbackEntry.Available
@@ -216,8 +218,6 @@ class NetworkAgentTest {
             data class OnSignalStrengthThresholdsUpdated(val thresholds: IntArray) : CallbackEntry()
         }
 
-        fun getName(): String? = (nc.getNetworkSpecifier() as? StringNetworkSpecifier)?.specifier
-
         override fun onBandwidthUpdateRequested() {
             history.add(OnBandwidthUpdateRequested)
         }
@@ -321,8 +321,11 @@ class NetworkAgentTest {
             addCapability(NET_CAPABILITY_NOT_SUSPENDED)
             addCapability(NET_CAPABILITY_NOT_ROAMING)
             addCapability(NET_CAPABILITY_NOT_VPN)
+            if (SdkLevel.isAtLeastS()) {
+                addCapability(NET_CAPABILITY_NOT_VCN_MANAGED)
+            }
             if (null != name) {
-                setNetworkSpecifier(StringNetworkSpecifier(name))
+                setNetworkSpecifier(CompatUtil.makeEthernetNetworkSpecifier(name))
             }
         }
         val lp = initialLp ?: LinkProperties().apply {
@@ -498,12 +501,12 @@ class NetworkAgentTest {
         val request1 = NetworkRequest.Builder()
                 .clearCapabilities()
                 .addTransportType(TRANSPORT_TEST)
-                .setNetworkSpecifier(StringNetworkSpecifier(name1))
+                .setNetworkSpecifier(CompatUtil.makeEthernetNetworkSpecifier(name1))
                 .build()
         val request2 = NetworkRequest.Builder()
                 .clearCapabilities()
                 .addTransportType(TRANSPORT_TEST)
-                .setNetworkSpecifier(StringNetworkSpecifier(name2))
+                .setNetworkSpecifier(CompatUtil.makeEthernetNetworkSpecifier(name2))
                 .build()
         val callback1 = TestableNetworkCallback(timeoutMs = DEFAULT_TIMEOUT_MS)
         val callback2 = TestableNetworkCallback(timeoutMs = DEFAULT_TIMEOUT_MS)
@@ -558,6 +561,9 @@ class NetworkAgentTest {
             addTransportType(TRANSPORT_VPN)
             removeCapability(NET_CAPABILITY_NOT_VPN)
             setTransportInfo(VpnTransportInfo(VpnManager.TYPE_VPN_SERVICE))
+            if (SdkLevel.isAtLeastS()) {
+                addCapability(NET_CAPABILITY_NOT_VCN_MANAGED)
+            }
         }
         val defaultNetwork = mCM.activeNetwork
         assertNotNull(defaultNetwork)
