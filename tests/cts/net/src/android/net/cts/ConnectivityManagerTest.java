@@ -19,12 +19,29 @@ package android.net.cts;
 import static android.Manifest.permission.CONNECTIVITY_INTERNAL;
 import static android.Manifest.permission.CONNECTIVITY_USE_RESTRICTED_NETWORKS;
 import static android.Manifest.permission.NETWORK_SETTINGS;
+import static android.content.pm.PackageManager.FEATURE_BLUETOOTH;
 import static android.content.pm.PackageManager.FEATURE_ETHERNET;
 import static android.content.pm.PackageManager.FEATURE_TELEPHONY;
 import static android.content.pm.PackageManager.FEATURE_USB_HOST;
+import static android.content.pm.PackageManager.FEATURE_WATCH;
 import static android.content.pm.PackageManager.FEATURE_WIFI;
+import static android.content.pm.PackageManager.FEATURE_WIFI_DIRECT;
 import static android.content.pm.PackageManager.GET_PERMISSIONS;
 import static android.content.pm.PackageManager.PERMISSION_GRANTED;
+import static android.net.ConnectivityManager.TYPE_BLUETOOTH;
+import static android.net.ConnectivityManager.TYPE_ETHERNET;
+import static android.net.ConnectivityManager.TYPE_MOBILE_CBS;
+import static android.net.ConnectivityManager.TYPE_MOBILE_DUN;
+import static android.net.ConnectivityManager.TYPE_MOBILE_EMERGENCY;
+import static android.net.ConnectivityManager.TYPE_MOBILE_FOTA;
+import static android.net.ConnectivityManager.TYPE_MOBILE_HIPRI;
+import static android.net.ConnectivityManager.TYPE_MOBILE_IA;
+import static android.net.ConnectivityManager.TYPE_MOBILE_IMS;
+import static android.net.ConnectivityManager.TYPE_MOBILE_MMS;
+import static android.net.ConnectivityManager.TYPE_MOBILE_SUPL;
+import static android.net.ConnectivityManager.TYPE_PROXY;
+import static android.net.ConnectivityManager.TYPE_VPN;
+import static android.net.ConnectivityManager.TYPE_WIFI_P2P;
 import static android.net.NetworkCapabilities.NET_CAPABILITY_FOREGROUND;
 import static android.net.NetworkCapabilities.NET_CAPABILITY_IMS;
 import static android.net.NetworkCapabilities.NET_CAPABILITY_INTERNET;
@@ -78,14 +95,12 @@ import android.net.LinkAddress;
 import android.net.LinkProperties;
 import android.net.Network;
 import android.net.NetworkCapabilities;
-import android.net.NetworkConfig;
 import android.net.NetworkInfo;
 import android.net.NetworkInfo.DetailedState;
 import android.net.NetworkInfo.State;
 import android.net.NetworkRequest;
 import android.net.NetworkUtils;
 import android.net.SocketKeepalive;
-import android.net.StringNetworkSpecifier;
 import android.net.TestNetworkInterface;
 import android.net.TestNetworkManager;
 import android.net.cts.util.CtsNetUtils;
@@ -101,7 +116,9 @@ import android.os.SystemProperties;
 import android.os.VintfRuntimeInfo;
 import android.platform.test.annotations.AppModeFull;
 import android.provider.Settings;
+import android.telephony.TelephonyManager;
 import android.text.TextUtils;
+import android.util.ArraySet;
 import android.util.Log;
 import android.util.Pair;
 
@@ -109,6 +126,14 @@ import androidx.test.InstrumentationRegistry;
 import androidx.test.runner.AndroidJUnit4;
 
 import com.android.internal.util.ArrayUtils;
+import com.android.modules.utils.build.SdkLevel;
+import com.android.networkstack.apishim.ConnectivityManagerShimImpl;
+import com.android.networkstack.apishim.ConstantsShim;
+import com.android.networkstack.apishim.common.ConnectivityManagerShim;
+import com.android.testutils.CompatUtil;
+import com.android.testutils.DevSdkIgnoreRule;
+import com.android.testutils.DevSdkIgnoreRule.IgnoreUpTo;
+import com.android.testutils.DevSdkIgnoreRuleKt;
 import com.android.testutils.RecorderCallback.CallbackEntry;
 import com.android.testutils.SkipPresubmit;
 import com.android.testutils.TestableNetworkCallback;
@@ -119,6 +144,7 @@ import libcore.io.Streams;
 
 import org.junit.After;
 import org.junit.Before;
+import org.junit.Rule;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 
@@ -139,7 +165,6 @@ import java.net.UnknownHostException;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Collection;
-import java.util.HashMap;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Executor;
@@ -151,6 +176,8 @@ import java.util.regex.Pattern;
 
 @RunWith(AndroidJUnit4.class)
 public class ConnectivityManagerTest {
+    @Rule
+    public final DevSdkIgnoreRule ignoreRule = new DevSdkIgnoreRule();
 
     private static final String TAG = ConnectivityManagerTest.class.getSimpleName();
 
@@ -163,9 +190,7 @@ public class ConnectivityManagerTest {
     private static final int MAX_KEEPALIVE_RETRY_COUNT = 3;
     private static final int MIN_KEEPALIVE_INTERVAL = 10;
 
-    // Changing meteredness on wifi involves reconnecting, which can take several seconds (involves
-    // re-associating, DHCP...)
-    private static final int NETWORK_CHANGE_METEREDNESS_TIMEOUT = 30_000;
+    private static final int NETWORK_CALLBACK_TIMEOUT_MS = 30_000;
     private static final int NUM_TRIES_MULTIPATH_PREF_CHECK = 20;
     private static final long INTERVAL_MULTIPATH_PREF_CHECK_MS = 500;
     // device could have only one interface: data, wifi.
@@ -191,10 +216,10 @@ public class ConnectivityManagerTest {
     private Context mContext;
     private Instrumentation mInstrumentation;
     private ConnectivityManager mCm;
+    private ConnectivityManagerShim mCmShim;
     private WifiManager mWifiManager;
     private PackageManager mPackageManager;
-    private final HashMap<Integer, NetworkConfig> mNetworks =
-            new HashMap<Integer, NetworkConfig>();
+    private final ArraySet<Integer> mNetworkTypes = new ArraySet<>();
     private UiAutomation mUiAutomation;
     private CtsNetUtils mCtsNetUtils;
 
@@ -203,27 +228,72 @@ public class ConnectivityManagerTest {
         mInstrumentation = InstrumentationRegistry.getInstrumentation();
         mContext = mInstrumentation.getContext();
         mCm = (ConnectivityManager) mContext.getSystemService(Context.CONNECTIVITY_SERVICE);
+        mCmShim = ConnectivityManagerShimImpl.newInstance(mContext);
         mWifiManager = (WifiManager) mContext.getSystemService(Context.WIFI_SERVICE);
         mPackageManager = mContext.getPackageManager();
         mCtsNetUtils = new CtsNetUtils(mContext);
 
-        // Get com.android.internal.R.array.networkAttributes
-        int resId = mContext.getResources().getIdentifier("networkAttributes", "array", "android");
-        String[] naStrings = mContext.getResources().getStringArray(resId);
-        //TODO: What is the "correct" way to determine if this is a wifi only device?
-        boolean wifiOnly = SystemProperties.getBoolean("ro.radio.noril", false);
-        for (String naString : naStrings) {
-            try {
-                NetworkConfig n = new NetworkConfig(naString);
-                if (wifiOnly && ConnectivityManager.isNetworkTypeMobile(n.type)) {
-                    continue;
-                }
-                mNetworks.put(n.type, n);
-            } catch (Exception e) {}
+        if (DevSdkIgnoreRuleKt.isDevSdkInRange(null /* minExclusive */,
+                Build.VERSION_CODES.R /* maxInclusive */)) {
+            addLegacySupportedNetworkTypes();
+        } else {
+            addSupportedNetworkTypes();
         }
+
         mUiAutomation = mInstrumentation.getUiAutomation();
 
         assertNotNull("CTS requires a working Internet connection", mCm.getActiveNetwork());
+    }
+
+    private void addLegacySupportedNetworkTypes() {
+        // Network type support as expected for android R-
+        // Get com.android.internal.R.array.networkAttributes
+        int resId = mContext.getResources().getIdentifier("networkAttributes", "array", "android");
+        String[] naStrings = mContext.getResources().getStringArray(resId);
+        boolean wifiOnly = SystemProperties.getBoolean("ro.radio.noril", false);
+        for (String naString : naStrings) {
+            try {
+                final String[] splitConfig = naString.split(",");
+                // Format was name,type,radio,priority,restoreTime,dependencyMet
+                final int type = Integer.parseInt(splitConfig[1]);
+                if (wifiOnly && ConnectivityManager.isNetworkTypeMobile(type)) {
+                    continue;
+                }
+                mNetworkTypes.add(type);
+            } catch (Exception e) {}
+        }
+    }
+
+    private void addSupportedNetworkTypes() {
+        final PackageManager pm = mContext.getPackageManager();
+        if (pm.hasSystemFeature(FEATURE_WIFI)) {
+            mNetworkTypes.add(TYPE_WIFI);
+        }
+        if (pm.hasSystemFeature(FEATURE_WIFI_DIRECT)) {
+            mNetworkTypes.add(TYPE_WIFI_P2P);
+        }
+        if (mContext.getSystemService(TelephonyManager.class).isDataCapable()) {
+            mNetworkTypes.add(TYPE_MOBILE);
+            mNetworkTypes.add(TYPE_MOBILE_MMS);
+            mNetworkTypes.add(TYPE_MOBILE_SUPL);
+            mNetworkTypes.add(TYPE_MOBILE_DUN);
+            mNetworkTypes.add(TYPE_MOBILE_HIPRI);
+            mNetworkTypes.add(TYPE_MOBILE_FOTA);
+            mNetworkTypes.add(TYPE_MOBILE_IMS);
+            mNetworkTypes.add(TYPE_MOBILE_CBS);
+            mNetworkTypes.add(TYPE_MOBILE_IA);
+            mNetworkTypes.add(TYPE_MOBILE_EMERGENCY);
+        }
+        if (pm.hasSystemFeature(FEATURE_BLUETOOTH)) {
+            mNetworkTypes.add(TYPE_BLUETOOTH);
+        }
+        if (pm.hasSystemFeature(FEATURE_WATCH)) {
+            mNetworkTypes.add(TYPE_PROXY);
+        }
+        if (mContext.getSystemService(Context.ETHERNET_SERVICE) != null) {
+            mNetworkTypes.add(TYPE_ETHERNET);
+        }
+        mNetworkTypes.add(TYPE_VPN);
     }
 
     @After
@@ -452,9 +522,9 @@ public class ConnectivityManagerTest {
     }
 
     private boolean shouldBeSupported(int networkType) {
-        return mNetworks.containsKey(networkType) ||
-               (networkType == ConnectivityManager.TYPE_VPN) ||
-               (networkType == ConnectivityManager.TYPE_ETHERNET && shouldEthernetBeSupported());
+        return mNetworkTypes.contains(networkType)
+            || (networkType == ConnectivityManager.TYPE_VPN)
+            || (networkType == ConnectivityManager.TYPE_ETHERNET && shouldEthernetBeSupported());
     }
 
     @Test
@@ -518,11 +588,12 @@ public class ConnectivityManagerTest {
         mCm.registerDefaultNetworkCallback(defaultTrackingCallback);
 
         final TestNetworkCallback systemDefaultTrackingCallback = new TestNetworkCallback();
-        runWithShellPermissionIdentity(() ->
-                mCm.registerSystemDefaultNetworkCallback(systemDefaultTrackingCallback,
-                        new Handler(Looper.getMainLooper())),
-                NETWORK_SETTINGS);
-
+        if (shouldTestSApis()) {
+            runWithShellPermissionIdentity(() ->
+                    mCmShim.registerSystemDefaultNetworkCallback(systemDefaultTrackingCallback,
+                            new Handler(Looper.getMainLooper())),
+                    NETWORK_SETTINGS);
+        }
 
         Network wifiNetwork = null;
 
@@ -539,16 +610,20 @@ public class ConnectivityManagerTest {
             assertNotNull("Did not receive onAvailable on default network callback",
                     defaultTrackingCallback.waitForAvailable());
 
-            assertNotNull("Did not receive onAvailable on system default network callback",
-                    systemDefaultTrackingCallback.waitForAvailable());
+            if (shouldTestSApis()) {
+                assertNotNull("Did not receive onAvailable on system default network callback",
+                        systemDefaultTrackingCallback.waitForAvailable());
+            }
         } catch (InterruptedException e) {
             fail("Broadcast receiver or NetworkCallback wait was interrupted.");
         } finally {
             mCm.unregisterNetworkCallback(callback);
             mCm.unregisterNetworkCallback(defaultTrackingCallback);
-            runWithShellPermissionIdentity(
-                    () -> mCm.unregisterNetworkCallback(systemDefaultTrackingCallback),
-                    NETWORK_SETTINGS);
+            if (shouldTestSApis()) {
+                runWithShellPermissionIdentity(
+                        () -> mCm.unregisterNetworkCallback(systemDefaultTrackingCallback),
+                        NETWORK_SETTINGS);
+            }
         }
     }
 
@@ -567,17 +642,23 @@ public class ConnectivityManagerTest {
 
         // Create a ConnectivityActionReceiver that has an IntentFilter for our locally defined
         // action, NETWORK_CALLBACK_ACTION.
-        IntentFilter filter = new IntentFilter();
+        final IntentFilter filter = new IntentFilter();
         filter.addAction(NETWORK_CALLBACK_ACTION);
 
-        ConnectivityActionReceiver receiver = new ConnectivityActionReceiver(
+        final ConnectivityActionReceiver receiver = new ConnectivityActionReceiver(
                 mCm, ConnectivityManager.TYPE_WIFI, NetworkInfo.State.CONNECTED);
         mContext.registerReceiver(receiver, filter);
 
         // Create a broadcast PendingIntent for NETWORK_CALLBACK_ACTION.
-        Intent intent = new Intent(NETWORK_CALLBACK_ACTION);
-        PendingIntent pendingIntent = PendingIntent.getBroadcast(
-                mContext, 0, intent, PendingIntent.FLAG_CANCEL_CURRENT);
+        final Intent intent = new Intent(NETWORK_CALLBACK_ACTION)
+                .setPackage(mContext.getPackageName());
+        // While ConnectivityService would put extra info such as network or request id before
+        // broadcasting the inner intent. The MUTABLE flag needs to be added accordingly.
+        // TODO: replace with PendingIntent.FLAG_MUTABLE when this code compiles against S+ or
+        //  shims.
+        final int pendingIntentFlagMutable = 1 << 25;
+        final PendingIntent pendingIntent = PendingIntent.getBroadcast(mContext, 0 /*requestCode*/,
+                intent, PendingIntent.FLAG_CANCEL_CURRENT | pendingIntentFlagMutable);
 
         // We will register for a WIFI network being available or lost.
         mCm.registerNetworkCallback(makeWifiNetworkRequest(), pendingIntent);
@@ -746,7 +827,9 @@ public class ConnectivityManagerTest {
         // with the current setting. Therefore, if the setting has already been changed,
         // this method will return right away, and if not it will wait for the setting to change.
         mCm.registerDefaultNetworkCallback(networkCallback);
-        if (!latch.await(NETWORK_CHANGE_METEREDNESS_TIMEOUT, TimeUnit.MILLISECONDS)) {
+        // Changing meteredness on wifi involves reconnecting, which can take several seconds
+        // (involves re-associating, DHCP...).
+        if (!latch.await(NETWORK_CALLBACK_TIMEOUT_MS, TimeUnit.MILLISECONDS)) {
             fail("Timed out waiting for active network metered status to change to "
                  + requestedMeteredness + " ; network = " + mCm.getActiveNetwork());
         }
@@ -1499,12 +1582,12 @@ public class ConnectivityManagerTest {
     }
 
     private void waitForAvailable(@NonNull final TestableNetworkCallback cb) {
-        cb.eventuallyExpect(CallbackEntry.AVAILABLE, AIRPLANE_MODE_CHANGE_TIMEOUT_MS,
+        cb.eventuallyExpect(CallbackEntry.AVAILABLE, NETWORK_CALLBACK_TIMEOUT_MS,
                 c -> c instanceof CallbackEntry.Available);
     }
 
     private void waitForLost(@NonNull final TestableNetworkCallback cb) {
-        cb.eventuallyExpect(CallbackEntry.LOST, AIRPLANE_MODE_CHANGE_TIMEOUT_MS,
+        cb.eventuallyExpect(CallbackEntry.LOST, NETWORK_CALLBACK_TIMEOUT_MS,
                 c -> c instanceof CallbackEntry.Lost);
     }
 
@@ -1556,16 +1639,17 @@ public class ConnectivityManagerTest {
      * Verify background request can only be requested when acquiring
      * {@link android.Manifest.permission.NETWORK_SETTINGS}.
      */
-    @SkipPresubmit(reason = "Flaky: b/179554972; add to presubmit after fixing")
     @Test
+    @IgnoreUpTo(Build.VERSION_CODES.R)
     public void testRequestBackgroundNetwork() throws Exception {
         // Create a tun interface. Use the returned interface name as the specifier to create
         // a test network request.
-        final TestNetworkInterface testNetworkInterface = runWithShellPermissionIdentity(() -> {
-            final TestNetworkManager tnm =
-                    mContext.getSystemService(TestNetworkManager.class);
-            return tnm.createTunInterface(new LinkAddress[]{TEST_LINKADDR});
-        }, android.Manifest.permission.MANAGE_TEST_NETWORKS,
+        final TestNetworkManager tnm = runWithShellPermissionIdentity(() ->
+                mContext.getSystemService(TestNetworkManager.class),
+                android.Manifest.permission.MANAGE_TEST_NETWORKS);
+        final TestNetworkInterface testNetworkInterface = runWithShellPermissionIdentity(() ->
+                    tnm.createTunInterface(new LinkAddress[]{TEST_LINKADDR}),
+                android.Manifest.permission.MANAGE_TEST_NETWORKS,
                 android.Manifest.permission.NETWORK_SETTINGS);
         assertNotNull(testNetworkInterface);
 
@@ -1574,33 +1658,33 @@ public class ConnectivityManagerTest {
                 // Test networks do not have NOT_VPN or TRUSTED capabilities by default
                 .removeCapability(NetworkCapabilities.NET_CAPABILITY_NOT_VPN)
                 .removeCapability(NetworkCapabilities.NET_CAPABILITY_TRUSTED)
-                .setNetworkSpecifier(
-                        new StringNetworkSpecifier(testNetworkInterface.getInterfaceName()))
+                .setNetworkSpecifier(CompatUtil.makeTestNetworkSpecifier(
+                        testNetworkInterface.getInterfaceName()))
                 .build();
 
         // Verify background network cannot be requested without NETWORK_SETTINGS permission.
         final TestableNetworkCallback callback = new TestableNetworkCallback();
+        final Handler handler = new Handler(Looper.getMainLooper());
         assertThrows(SecurityException.class,
-                () -> mCm.requestBackgroundNetwork(testRequest, null, callback));
+                () -> mCmShim.requestBackgroundNetwork(testRequest, handler, callback));
 
+        Network testNetwork = null;
         try {
             // Request background test network via Shell identity which has NETWORK_SETTINGS
             // permission granted.
             runWithShellPermissionIdentity(
-                    () -> mCm.requestBackgroundNetwork(testRequest, null, callback),
-                    android.Manifest.permission.NETWORK_SETTINGS);
+                    () -> mCmShim.requestBackgroundNetwork(testRequest, handler, callback),
+                    new String[] { android.Manifest.permission.NETWORK_SETTINGS });
 
             // Register the test network agent which has no foreground request associated to it.
             // And verify it can satisfy the background network request just fired.
             final Binder binder = new Binder();
-            runWithShellPermissionIdentity(() -> {
-                final TestNetworkManager tnm =
-                        mContext.getSystemService(TestNetworkManager.class);
-                tnm.setupTestNetwork(testNetworkInterface.getInterfaceName(), binder);
-            }, android.Manifest.permission.MANAGE_TEST_NETWORKS,
-                    android.Manifest.permission.NETWORK_SETTINGS);
+            runWithShellPermissionIdentity(() ->
+                    tnm.setupTestNetwork(testNetworkInterface.getInterfaceName(), binder),
+                    new String[] { android.Manifest.permission.MANAGE_TEST_NETWORKS,
+                            android.Manifest.permission.NETWORK_SETTINGS });
             waitForAvailable(callback);
-            final Network testNetwork = callback.getLastAvailableNetwork();
+            testNetwork = callback.getLastAvailableNetwork();
             assertNotNull(testNetwork);
 
             // The test network that has just connected is a foreground network,
@@ -1608,7 +1692,7 @@ public class ConnectivityManagerTest {
             // background if no foreground request can be satisfied. Thus, wait for a short
             // period is needed to let foreground capability go away.
             callback.eventuallyExpect(CallbackEntry.NETWORK_CAPS_UPDATED,
-                    callback.getDefaultTimeoutMs(),
+                    NETWORK_CALLBACK_TIMEOUT_MS,
                     c -> c instanceof CallbackEntry.CapabilitiesChanged
                             && !((CallbackEntry.CapabilitiesChanged) c).getCaps()
                             .hasCapability(NET_CAPABILITY_FOREGROUND));
@@ -1616,7 +1700,25 @@ public class ConnectivityManagerTest {
             assertFalse("expected background network, but got " + nc,
                     nc.hasCapability(NET_CAPABILITY_FOREGROUND));
         } finally {
+            final Network n = testNetwork;
+            runWithShellPermissionIdentity(() -> {
+                if (null != n) {
+                    tnm.teardownTestNetwork(n);
+                    callback.eventuallyExpect(CallbackEntry.LOST,
+                            NETWORK_CALLBACK_TIMEOUT_MS,
+                            lost -> n.equals(lost.getNetwork()));
+                }
+                testNetworkInterface.getFileDescriptor().close();
+            }, new String[] { android.Manifest.permission.MANAGE_TEST_NETWORKS });
             mCm.unregisterNetworkCallback(callback);
         }
+    }
+
+    /**
+     * Whether to test S+ APIs. This requires a) that the test be running on an S+ device, and
+     * b) that the code be compiled against shims new enough to access these APIs.
+     */
+    private boolean shouldTestSApis() {
+        return SdkLevel.isAtLeastS() && ConstantsShim.VERSION > Build.VERSION_CODES.R;
     }
 }

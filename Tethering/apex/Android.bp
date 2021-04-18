@@ -20,22 +20,30 @@ package {
 
 apex {
     name: "com.android.tethering",
-    // TODO: make updatable again once this contains only updatable artifacts (in particular, this
-    // cannot build as updatable unless service-connectivity builds against stable API).
-    updatable: false,
-    // min_sdk_version: "30",
+    compile_multilib: "both",
+    updatable: true,
+    min_sdk_version: "30",
     java_libs: [
+        "framework-connectivity",
         "framework-tethering",
         "service-connectivity",
     ],
-    jni_libs: [
-        "libservice-connectivity",
-    ],
+    multilib: {
+        first: {
+            jni_libs: ["libservice-connectivity"]
+        },
+        both: {
+            jni_libs: ["libframework-connectivity-jni"],
+        }
+    },
     bpfs: [
         "offload.o",
         "test.o",
     ],
-    apps: ["Tethering"],
+    apps: [
+        "ServiceConnectivityResources",
+        "Tethering",
+    ],
     manifest: "manifest.json",
     key: "com.android.tethering.key",
 
@@ -58,6 +66,7 @@ override_apex {
     base: "com.android.tethering",
     package_name: "com.android.tethering.inprocess",
     apps: [
+        "ServiceConnectivityResources",
         "InProcessTethering",
     ],
 }
