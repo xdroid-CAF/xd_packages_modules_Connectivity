@@ -722,12 +722,13 @@ public class VpnTest extends InstrumentationTestCase {
         final TestableNetworkCallback otherUidCallback = new TestableNetworkCallback();
         final TestableNetworkCallback myUidCallback = new TestableNetworkCallback();
         if (SdkLevel.isAtLeastS()) {
-            final int otherUid = UserHandle.getUid(UserHandle.of(5), Process.FIRST_APPLICATION_UID);
+            final int otherUid =
+                    UserHandle.of(5 /* userId */).getUid(Process.FIRST_APPLICATION_UID);
             final Handler h = new Handler(Looper.getMainLooper());
             runWithShellPermissionIdentity(() -> {
                 mCM.registerSystemDefaultNetworkCallback(systemDefaultCallback, h);
-                mCM.registerDefaultNetworkCallbackAsUid(otherUid, otherUidCallback, h);
-                mCM.registerDefaultNetworkCallbackAsUid(Process.myUid(), myUidCallback, h);
+                mCM.registerDefaultNetworkCallbackForUid(otherUid, otherUidCallback, h);
+                mCM.registerDefaultNetworkCallbackForUid(Process.myUid(), myUidCallback, h);
             }, NETWORK_SETTINGS);
             for (TestableNetworkCallback callback :
                     List.of(systemDefaultCallback, otherUidCallback, myUidCallback)) {
@@ -1148,7 +1149,7 @@ public class VpnTest extends InstrumentationTestCase {
         assertTrue(vpnNc.hasTransport(TRANSPORT_VPN));
         final TransportInfo ti = vpnNc.getTransportInfo();
         assertTrue(ti instanceof VpnTransportInfo);
-        assertEquals(VpnManager.TYPE_VPN_SERVICE, ((VpnTransportInfo) ti).type);
+        assertEquals(VpnManager.TYPE_VPN_SERVICE, ((VpnTransportInfo) ti).getType());
     }
 
     private void assertDefaultProxy(ProxyInfo expected) {
