@@ -92,12 +92,12 @@ public class MyService extends Service {
         }
 
         @Override
-        public void registerNetworkCallback(INetworkCallback cb) {
+        public void registerNetworkCallback(final NetworkRequest request, INetworkCallback cb) {
             if (mNetworkCallback != null) {
                 Log.d(TAG, "unregister previous network callback: " + mNetworkCallback);
                 unregisterNetworkCallback();
             }
-            Log.d(TAG, "registering network callback");
+            Log.d(TAG, "registering network callback for " + request);
 
             mNetworkCallback = new ConnectivityManager.NetworkCallback() {
                 @Override
@@ -140,7 +140,7 @@ public class MyService extends Service {
                     }
                 }
             };
-            mCm.registerNetworkCallback(makeNetworkRequest(), mNetworkCallback);
+            mCm.registerNetworkCallback(request, mNetworkCallback);
             try {
                 cb.asBinder().linkToDeath(() -> unregisterNetworkCallback(), 0);
             } catch (RemoteException e) {
@@ -164,12 +164,6 @@ public class MyService extends Service {
             jobScheduler.schedule(jobInfo);
         }
       };
-
-    private NetworkRequest makeNetworkRequest() {
-        return new NetworkRequest.Builder()
-                .addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
-                .build();
-    }
 
     @Override
     public IBinder onBind(Intent intent) {
