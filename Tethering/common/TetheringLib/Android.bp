@@ -21,6 +21,7 @@ java_sdk_library {
     name: "framework-tethering",
     defaults: ["framework-module-defaults"],
     impl_library_visibility: [
+        "//frameworks/base/packages/Tethering:__subpackages__",
         "//packages/modules/Connectivity/Tethering:__subpackages__",
     ],
 
@@ -29,7 +30,7 @@ java_sdk_library {
     stub_only_libs: ["framework-connectivity.stubs.module_lib"],
     aidl: {
         include_dirs: [
-            "packages/modules/Connectivity/framework/aidl-export",
+            "frameworks/base/packages/Connectivity/framework/aidl-export",
         ],
     },
 
@@ -56,8 +57,6 @@ filegroup {
         "src/android/net/TetheringConfigurationParcel.aidl",
         "src/android/net/TetheringRequestParcel.aidl",
         "src/android/net/TetherStatesParcel.aidl",
-        "src/android/net/TetheringInterface.aidl",
-        "src/android/net/TetheringInterface.java",
     ],
     path: "src"
 }

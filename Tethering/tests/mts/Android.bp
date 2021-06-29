@@ -19,10 +19,7 @@ package {
 android_test {
     // This tests for functionality that is not required for devices that
     // don't use Tethering mainline module.
-    name: "MtsTetheringTestLatestSdk",
-
-    min_sdk_version: "30",
-    target_sdk_version: "30",
+    name: "MtsTetheringTest",
 
     libs: [
         "android.test.base",
@@ -51,8 +48,6 @@ android_test {
     ],
 
     defaults: ["framework-connectivity-test-defaults"],
-
-    platform_apis: true,
 
     // Tag this module as a mts test artifact
     test_suites: [

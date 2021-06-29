@@ -179,18 +179,6 @@ public class BpfCoordinatorShimImpl
     }
 
     @Override
-    public boolean addDevMap(int ifIndex) {
-        /* no op */
-        return false;
-    }
-
-    @Override
-    public boolean removeDevMap(int ifIndex) {
-        /* no op */
-        return false;
-    }
-
-    @Override
     public String toString() {
         return "Netd used";
     }

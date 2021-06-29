@@ -16,7 +16,6 @@
 
 package android.net;
 
-import static android.Manifest.permission.ACCESS_NETWORK_STATE;
 import static android.Manifest.permission.MANAGE_TEST_NETWORKS;
 import static android.Manifest.permission.NETWORK_SETTINGS;
 import static android.Manifest.permission.TETHER_PRIVILEGED;
@@ -80,7 +79,6 @@ import java.nio.ByteBuffer;
 import java.util.Collection;
 import java.util.List;
 import java.util.Random;
-import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
@@ -123,7 +121,7 @@ public class EthernetTetheringTest {
         // Needed to create a TestNetworkInterface, to call requestTetheredInterface, and to receive
         // tethered client callbacks.
         mUiAutomation.adoptShellPermissionIdentity(
-                MANAGE_TEST_NETWORKS, NETWORK_SETTINGS, TETHER_PRIVILEGED, ACCESS_NETWORK_STATE);
+                MANAGE_TEST_NETWORKS, NETWORK_SETTINGS, TETHER_PRIVILEGED);
         mRunTests = mTm.isTetheringSupported() && mEm != null;
         assumeTrue(mRunTests);
 
@@ -350,7 +348,7 @@ public class EthernetTetheringTest {
         private final CountDownLatch mLocalOnlyStartedLatch = new CountDownLatch(1);
         private final CountDownLatch mLocalOnlyStoppedLatch = new CountDownLatch(1);
         private final CountDownLatch mClientConnectedLatch = new CountDownLatch(1);
-        private final TetheringInterface mIface;
+        private final String mIface;
 
         private volatile boolean mInterfaceWasTethered = false;
         private volatile boolean mInterfaceWasLocalOnly = false;
@@ -359,24 +357,20 @@ public class EthernetTetheringTest {
 
         MyTetheringEventCallback(TetheringManager tm, String iface) {
             mTm = tm;
-            mIface = new TetheringInterface(TETHERING_ETHERNET, iface);
+            mIface = iface;
         }
 
         public void unregister() {
             mTm.unregisterTetheringEventCallback(this);
             mUnregistered = true;
         }
-        @Override
-        public void onTetheredInterfacesChanged(List<String> interfaces) {
-            fail("Should only call callback that takes a Set<TetheringInterface>");
-        }
 
         @Override
-        public void onTetheredInterfacesChanged(Set<TetheringInterface> interfaces) {
+        public void onTetheredInterfacesChanged(List<String> interfaces) {
             // Ignore stale callbacks registered by previous test cases.
             if (mUnregistered) return;
 
-            if (!mInterfaceWasTethered && interfaces.contains(mIface)) {
+            if (!mInterfaceWasTethered && (mIface == null || interfaces.contains(mIface))) {
                 // This interface is being tethered for the first time.
                 Log.d(TAG, "Tethering started: " + interfaces);
                 mInterfaceWasTethered = true;
@@ -389,15 +383,10 @@ public class EthernetTetheringTest {
 
         @Override
         public void onLocalOnlyInterfacesChanged(List<String> interfaces) {
-            fail("Should only call callback that takes a Set<TetheringInterface>");
-        }
-
-        @Override
-        public void onLocalOnlyInterfacesChanged(Set<TetheringInterface> interfaces) {
             // Ignore stale callbacks registered by previous test cases.
             if (mUnregistered) return;
 
-            if (!mInterfaceWasLocalOnly && interfaces.contains(mIface)) {
+            if (!mInterfaceWasLocalOnly && (mIface == null || interfaces.contains(mIface))) {
                 // This interface is being put into local-only mode for the first time.
                 Log.d(TAG, "Local-only started: " + interfaces);
                 mInterfaceWasLocalOnly = true;

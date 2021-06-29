@@ -47,9 +47,6 @@ import androidx.annotation.Nullable;
 
 import com.android.internal.annotations.VisibleForTesting;
 import com.android.internal.util.StateMachine;
-import com.android.networkstack.apishim.ConnectivityManagerShimImpl;
-import com.android.networkstack.apishim.common.ConnectivityManagerShim;
-import com.android.networkstack.apishim.common.UnsupportedApiLevelException;
 
 import java.util.HashMap;
 import java.util.HashSet;
@@ -145,28 +142,33 @@ public class UpstreamNetworkMonitor {
         mWhat = what;
         mLocalPrefixes = new HashSet<>();
         mIsDefaultCellularUpstream = false;
-        mCM = (ConnectivityManager) ctx.getSystemService(Context.CONNECTIVITY_SERVICE);
+    }
+
+    @VisibleForTesting
+    public UpstreamNetworkMonitor(
+            ConnectivityManager cm, StateMachine tgt, SharedLog log, int what) {
+        this((Context) null, tgt, log, what);
+        mCM = cm;
     }
 
     /**
-     * Tracking the system default network. This method should be only called once when system is
-     * ready, and the callback is never unregistered.
+     * Tracking the system default network. This method should be called when system is ready.
      *
+     * @param defaultNetworkRequest should be the same as ConnectivityService default request
      * @param entitle a EntitlementManager object to communicate between EntitlementManager and
      * UpstreamNetworkMonitor
      */
-    public void startTrackDefaultNetwork(EntitlementManager entitle) {
-        if (mDefaultNetworkCallback != null) {
-            Log.wtf(TAG, "default network callback is already registered");
-            return;
-        }
-        ConnectivityManagerShim mCmShim = ConnectivityManagerShimImpl.newInstance(mContext);
-        mDefaultNetworkCallback = new UpstreamNetworkCallback(CALLBACK_DEFAULT_INTERNET);
-        try {
-            mCmShim.registerSystemDefaultNetworkCallback(mDefaultNetworkCallback, mHandler);
-        } catch (UnsupportedApiLevelException e) {
-            Log.wtf(TAG, "registerSystemDefaultNetworkCallback is not supported");
-            return;
+    public void startTrackDefaultNetwork(NetworkRequest defaultNetworkRequest,
+            EntitlementManager entitle) {
+
+        // defaultNetworkRequest is not really a "request", just a way of tracking the system
+        // default network. It's guaranteed not to actually bring up any networks because it's
+        // the should be the same request as the ConnectivityService default request, and thus
+        // shares fate with it. We can't use registerDefaultNetworkCallback because it will not
+        // track the system default network if there is a VPN that applies to our UID.
+        if (mDefaultNetworkCallback == null) {
+            mDefaultNetworkCallback = new UpstreamNetworkCallback(CALLBACK_DEFAULT_INTERNET);
+            cm().requestNetwork(defaultNetworkRequest, mDefaultNetworkCallback, mHandler);
         }
         if (mEntitlementMgr == null) {
             mEntitlementMgr = entitle;
@@ -398,10 +400,10 @@ public class UpstreamNetworkMonitor {
             // notifications (e.g. matching more than one of our callbacks).
             //
             // Also, it can happen that onLinkPropertiesChanged is called after
-            // onLost removed the state from mNetworkMap. This is due to a bug
-            // in disconnectAndDestroyNetwork, which calls nai.clatd.update()
-            // after the onLost callbacks. This was fixed in S.
-            // TODO: make this method void when R is no longer supported.
+            // onLost removed the state from mNetworkMap. This appears to be due
+            // to a bug in disconnectAndDestroyNetwork, which calls
+            // nai.clatd.update() after the onLost callbacks.
+            // TODO: fix the bug and make this method void.
             return null;
         }
 

@@ -1054,16 +1054,8 @@ public class IpServer extends StateMachine {
         mLastRaParams = newParams;
     }
 
-    private void maybeLogMessage(State state, int what) {
-        switch (what) {
-            // Suppress some CMD_* to avoid log flooding.
-            case CMD_IPV6_TETHER_UPDATE:
-            case CMD_NEIGHBOR_EVENT:
-                break;
-            default:
-                mLog.log(state.getName() + " got "
-                        + sMagicDecoderRing.get(what, Integer.toString(what)));
-        }
+    private void logMessage(State state, int what) {
+        mLog.log(state.getName() + " got " + sMagicDecoderRing.get(what, Integer.toString(what)));
     }
 
     private void sendInterfaceState(int newInterfaceState) {
@@ -1103,7 +1095,7 @@ public class IpServer extends StateMachine {
 
         @Override
         public boolean processMessage(Message message) {
-            maybeLogMessage(this, message.what);
+            logMessage(this, message.what);
             switch (message.what) {
                 case CMD_TETHER_REQUESTED:
                     mLastError = TetheringManager.TETHER_ERROR_NO_ERROR;
@@ -1188,6 +1180,7 @@ public class IpServer extends StateMachine {
 
         @Override
         public boolean processMessage(Message message) {
+            logMessage(this, message.what);
             switch (message.what) {
                 case CMD_TETHER_UNREQUESTED:
                     transitionTo(mInitialState);
@@ -1245,7 +1238,7 @@ public class IpServer extends StateMachine {
         public boolean processMessage(Message message) {
             if (super.processMessage(message)) return true;
 
-            maybeLogMessage(this, message.what);
+            logMessage(this, message.what);
             switch (message.what) {
                 case CMD_TETHER_REQUESTED:
                     mLog.e("CMD_TETHER_REQUESTED while in local-only hotspot mode.");
@@ -1313,7 +1306,7 @@ public class IpServer extends StateMachine {
         public boolean processMessage(Message message) {
             if (super.processMessage(message)) return true;
 
-            maybeLogMessage(this, message.what);
+            logMessage(this, message.what);
             switch (message.what) {
                 case CMD_TETHER_REQUESTED:
                     mLog.e("CMD_TETHER_REQUESTED while already tethering.");
@@ -1424,7 +1417,7 @@ public class IpServer extends StateMachine {
     class WaitingForRestartState extends State {
         @Override
         public boolean processMessage(Message message) {
-            maybeLogMessage(this, message.what);
+            logMessage(this, message.what);
             switch (message.what) {
                 case CMD_TETHER_UNREQUESTED:
                     transitionTo(mInitialState);
