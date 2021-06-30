@@ -16,6 +16,10 @@
 
 package com.android.networkstack.tethering;
 
+import static android.net.NetworkCapabilities.NET_CAPABILITY_DUN;
+import static android.net.NetworkCapabilities.NET_CAPABILITY_INTERNET;
+import static android.net.NetworkCapabilities.TRANSPORT_CELLULAR;
+
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.fail;
 
@@ -32,6 +36,7 @@ import android.os.Handler;
 import android.os.UserHandle;
 import android.util.ArrayMap;
 
+import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
 
 import java.util.Map;
@@ -63,13 +68,14 @@ public class TestConnectivityManager extends ConnectivityManager {
     public static final boolean BROADCAST_FIRST = false;
     public static final boolean CALLBACKS_FIRST = true;
 
-    final Map<NetworkCallback, NetworkRequestInfo> mAllCallbacks = new ArrayMap<>();
-    final Map<NetworkCallback, NetworkRequestInfo> mTrackingDefault = new ArrayMap<>();
+    final Map<NetworkCallback, NetworkCallbackInfo> mAllCallbacks = new ArrayMap<>();
+    // This contains the callbacks tracking the system default network, whether it's registered
+    // with registerSystemDefaultNetworkCallback (S+) or with a custom request (R-).
+    final Map<NetworkCallback, NetworkCallbackInfo> mTrackingDefault = new ArrayMap<>();
     final Map<NetworkCallback, NetworkRequestInfo> mListening = new ArrayMap<>();
     final Map<NetworkCallback, NetworkRequestInfo> mRequested = new ArrayMap<>();
     final Map<NetworkCallback, Integer> mLegacyTypeMap = new ArrayMap<>();
 
-    private final NetworkRequest mDefaultRequest;
     private final Context mContext;
 
     private int mNetworkId = 100;
@@ -80,21 +86,24 @@ public class TestConnectivityManager extends ConnectivityManager {
      * @param ctx the context to use. Must be a fake or a mock because otherwise the test will
      *            attempt to send real broadcasts and resulting in permission denials.
      * @param svc an IConnectivityManager. Should be a fake or a mock.
-     * @param defaultRequest the default NetworkRequest that will be used by Tethering.
      */
-    public TestConnectivityManager(Context ctx, IConnectivityManager svc,
-            NetworkRequest defaultRequest) {
+    public TestConnectivityManager(Context ctx, IConnectivityManager svc) {
         super(ctx, svc);
         mContext = ctx;
-        mDefaultRequest = defaultRequest;
     }
 
-    class NetworkRequestInfo {
-        public final NetworkRequest request;
+    static class NetworkCallbackInfo {
         public final Handler handler;
-        NetworkRequestInfo(NetworkRequest r, Handler h) {
-            request = r;
+        NetworkCallbackInfo(Handler h) {
             handler = h;
+        }
+    }
+
+    static class NetworkRequestInfo extends NetworkCallbackInfo {
+        public final NetworkRequest request;
+        NetworkRequestInfo(NetworkRequest r, Handler h) {
+            super(h);
+            request = r;
         }
     }
 
@@ -143,7 +152,7 @@ public class TestConnectivityManager extends ConnectivityManager {
     private void sendDefaultNetworkCallbacks(TestNetworkAgent formerDefault,
             TestNetworkAgent defaultNetwork) {
         for (NetworkCallback cb : mTrackingDefault.keySet()) {
-            final NetworkRequestInfo nri = mTrackingDefault.get(cb);
+            final NetworkCallbackInfo nri = mTrackingDefault.get(cb);
             if (defaultNetwork != null) {
                 nri.handler.post(() -> cb.onAvailable(defaultNetwork.networkId));
                 nri.handler.post(() -> cb.onCapabilitiesChanged(
@@ -181,17 +190,33 @@ public class TestConnectivityManager extends ConnectivityManager {
         makeDefaultNetwork(agent, BROADCAST_FIRST, null /* inBetween */);
     }
 
+    static boolean looksLikeDefaultRequest(NetworkRequest req) {
+        return req.hasCapability(NET_CAPABILITY_INTERNET)
+                && !req.hasCapability(NET_CAPABILITY_DUN)
+                && !req.hasTransport(TRANSPORT_CELLULAR);
+    }
+
     @Override
     public void requestNetwork(NetworkRequest req, NetworkCallback cb, Handler h) {
-        assertFalse(mAllCallbacks.containsKey(cb));
-        mAllCallbacks.put(cb, new NetworkRequestInfo(req, h));
-        if (mDefaultRequest.equals(req)) {
-            assertFalse(mTrackingDefault.containsKey(cb));
-            mTrackingDefault.put(cb, new NetworkRequestInfo(req, h));
+        // For R- devices, Tethering will invoke this function in 2 cases, one is to request mobile
+        // network, the other is to track system default network.
+        if (looksLikeDefaultRequest(req)) {
+            registerSystemDefaultNetworkCallback(cb, h);
         } else {
+            assertFalse(mAllCallbacks.containsKey(cb));
+            mAllCallbacks.put(cb, new NetworkRequestInfo(req, h));
             assertFalse(mRequested.containsKey(cb));
             mRequested.put(cb, new NetworkRequestInfo(req, h));
         }
+    }
+
+    @Override
+    public void registerSystemDefaultNetworkCallback(
+            @NonNull NetworkCallback cb, @NonNull Handler h) {
+        assertFalse(mAllCallbacks.containsKey(cb));
+        mAllCallbacks.put(cb, new NetworkCallbackInfo(h));
+        assertFalse(mTrackingDefault.containsKey(cb));
+        mTrackingDefault.put(cb, new NetworkCallbackInfo(h));
     }
 
     @Override
