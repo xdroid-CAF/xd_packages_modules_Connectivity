@@ -324,7 +324,8 @@ public class ConnectivityService extends IConnectivityManager.Stub
     private static final int DEFAULT_NASCENT_DELAY_MS = 5_000;
 
     // The maximum number of network request allowed per uid before an exception is thrown.
-    private static final int MAX_NETWORK_REQUESTS_PER_UID = 100;
+    @VisibleForTesting
+    static final int MAX_NETWORK_REQUESTS_PER_UID = 100;
 
     // The maximum number of network request allowed for system UIDs before an exception is thrown.
     @VisibleForTesting
@@ -344,7 +345,8 @@ public class ConnectivityService extends IConnectivityManager.Stub
     @VisibleForTesting
     protected final PermissionMonitor mPermissionMonitor;
 
-    private final PerUidCounter mNetworkRequestCounter;
+    @VisibleForTesting
+    final PerUidCounter mNetworkRequestCounter;
     @VisibleForTesting
     final PerUidCounter mSystemNetworkRequestCounter;
 
@@ -428,7 +430,7 @@ public class ConnectivityService extends IConnectivityManager.Stub
     // PREFERENCE_PRIORITY_NONE when sending to netd.
     static final int PREFERENCE_PRIORITY_DEFAULT = 1000;
     // As a security feature, VPNs have the top priority.
-    static final int PREFERENCE_PRIORITY_VPN = 1;
+    static final int PREFERENCE_PRIORITY_VPN = 0; // Netd supports only 0 for VPN.
     // Priority of per-app OEM preference. See {@link #setOemNetworkPreference}.
     @VisibleForTesting
     static final int PREFERENCE_PRIORITY_OEM = 10;
@@ -1154,9 +1156,20 @@ public class ConnectivityService extends IConnectivityManager.Stub
         private void incrementCountOrThrow(final int uid, final int numToIncrement) {
             final int newRequestCount =
                     mUidToNetworkRequestCount.get(uid, 0) + numToIncrement;
-            if (newRequestCount >= mMaxCountPerUid) {
+            if (newRequestCount >= mMaxCountPerUid
+                    // HACK : the system server is allowed to go over the request count limit
+                    // when it is creating requests on behalf of another app (but not itself,
+                    // so it can still detect its own request leaks). This only happens in the
+                    // per-app API flows in which case the old requests for that particular
+                    // UID will be removed soon.
+                    // TODO : instead of this hack, addPerAppDefaultNetworkRequests and other
+                    // users of transact() should unregister the requests to decrease the count
+                    // before they increase it again by creating a new NRI. Then remove the
+                    // transact() method.
+                    && (Process.myUid() == uid || Process.myUid() != Binder.getCallingUid())) {
                 throw new ServiceSpecificException(
-                        ConnectivityManager.Errors.TOO_MANY_REQUESTS);
+                        ConnectivityManager.Errors.TOO_MANY_REQUESTS,
+                        "Uid " + uid + " exceeded its allotted requests limit");
             }
             mUidToNetworkRequestCount.put(uid, newRequestCount);
         }
@@ -4206,13 +4219,16 @@ public class ConnectivityService extends IConnectivityManager.Stub
 
     private void handleRemoveNetworkRequest(@NonNull final NetworkRequestInfo nri) {
         ensureRunningOnConnectivityServiceThread();
-        nri.unlinkDeathRecipient();
         for (final NetworkRequest req : nri.mRequests) {
-            mNetworkRequests.remove(req);
+            if (null == mNetworkRequests.remove(req)) {
+                logw("Attempted removal of untracked request " + req + " for nri " + nri);
+                continue;
+            }
             if (req.isListen()) {
                 removeListenRequestFromNetworks(req);
             }
         }
+        nri.unlinkDeathRecipient();
         if (mDefaultNetworkRequests.remove(nri)) {
             // If this request was one of the defaults, then the UID rules need to be updated
             // WARNING : if the app(s) for which this network request is the default are doing
@@ -5814,7 +5830,7 @@ public class ConnectivityService extends IConnectivityManager.Stub
             mUid = nri.mUid;
             mAsUid = nri.mAsUid;
             mPendingIntent = nri.mPendingIntent;
-            mPerUidCounter = getRequestCounter(this);
+            mPerUidCounter = nri.mPerUidCounter;
             mPerUidCounter.incrementCountOrThrow(mUid);
             mCallbackFlags = nri.mCallbackFlags;
             mCallingAttributionTag = nri.mCallingAttributionTag;
@@ -5886,8 +5902,14 @@ public class ConnectivityService extends IConnectivityManager.Stub
         @Override
         public void binderDied() {
             log("ConnectivityService NetworkRequestInfo binderDied(" +
-                    mRequests + ", " + mBinder + ")");
-            releaseNetworkRequests(mRequests);
+                    "uid/pid:" + mUid + "/" + mPid + ", " + mBinder + ")");
+            // As an immutable collection, mRequests cannot change by the time the
+            // lambda is evaluated on the handler thread so calling .get() from a binder thread
+            // is acceptable. Use handleReleaseNetworkRequest and not directly
+            // handleRemoveNetworkRequest so as to force a lookup in the requests map, in case
+            // the app already unregistered the request.
+            mHandler.post(() -> handleReleaseNetworkRequest(mRequests.get(0),
+                    mUid, false /* callOnUnavailable */));
         }
 
         @Override
@@ -6316,12 +6338,6 @@ public class ConnectivityService extends IConnectivityManager.Stub
     /** Returns the next Network provider ID. */
     public final int nextNetworkProviderId() {
         return mNextNetworkProviderId.getAndIncrement();
-    }
-
-    private void releaseNetworkRequests(List<NetworkRequest> networkRequests) {
-        for (int i = 0; i < networkRequests.size(); i++) {
-            releaseNetworkRequest(networkRequests.get(i));
-        }
     }
 
     @Override
@@ -8350,13 +8366,13 @@ public class ConnectivityService extends IConnectivityManager.Stub
         // Second phase : deal with the active request (if any)
         if (null != activeRequest && activeRequest.isRequest()) {
             final boolean oldNeeded = offer.neededFor(activeRequest);
-            // An offer is needed if it is currently served by this provider or if this offer
-            // can beat the current satisfier.
+            // If an offer can satisfy the request, it is considered needed if it is currently
+            // served by this provider or if this offer can beat the current satisfier.
             final boolean currentlyServing = satisfier != null
-                    && satisfier.factorySerialNumber == offer.providerId;
-            final boolean newNeeded = (currentlyServing
-                    || (activeRequest.canBeSatisfiedBy(offer.caps)
-                            && networkRanker.mightBeat(activeRequest, satisfier, offer)));
+                    && satisfier.factorySerialNumber == offer.providerId
+                    && activeRequest.canBeSatisfiedBy(offer.caps);
+            final boolean newNeeded = currentlyServing
+                    || networkRanker.mightBeat(activeRequest, satisfier, offer);
             if (newNeeded != oldNeeded) {
                 if (newNeeded) {
                     offer.onNetworkNeeded(activeRequest);
@@ -10144,7 +10160,7 @@ public class ConnectivityService extends IConnectivityManager.Stub
             final NetworkRequestInfo trackingNri =
                     getDefaultRequestTrackingUid(callbackRequest.mAsUid);
 
-            // If this nri is not being tracked, the change it back to an untracked nri.
+            // If this nri is not being tracked, then change it back to an untracked nri.
             if (trackingNri == mDefaultRequest) {
                 callbackRequestsToRegister.add(new NetworkRequestInfo(
                         callbackRequest,
